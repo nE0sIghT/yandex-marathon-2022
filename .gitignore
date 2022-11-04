@@ -1,0 +1,6 @@
+dist/
+input/
+output/
+__pycache__
+.vscode
+marathon.log
