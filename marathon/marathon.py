@@ -164,6 +164,9 @@ class Truck:
                         else PointRestriction.M
                 )
                 self._add_route_point(point, distance)
+
+                if self._unloading:
+                    self._unloading = False
             except StopIteration:
                 if self._cargo == 0:
                     self._done = True
