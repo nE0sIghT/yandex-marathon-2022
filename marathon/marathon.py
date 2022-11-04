@@ -82,7 +82,7 @@ class Matrix:
 
     def nearest_point(self, point: int, maximum_distance: int, point_restriction: Optional[PointRestriction]):
         def point_allowed(target: int):
-            if not point_restriction:
+            if point_restriction is None:
                 return True
 
             return (
@@ -91,19 +91,30 @@ class Matrix:
                 point_restriction == PointRestriction.M and self.is_m_point(target)
             )
 
-        targets = tuple(islice((
-            (target, distance)
+        distance, targets = next(
+            (
+                distance,
+                tuple(
+                    target
+                    for target in targets
+                    if not self.is_used(target) and point_allowed(target)
+                )
+            )
             for distance, targets in self._distances[point].items()
-            if distance <= maximum_distance
-            for target in targets
-            if not self.is_used(target) and point_allowed(target)),
-            1
-        ))
+            if distance <= maximum_distance and
+            any(
+                target
+                for target in targets
+                if not self.is_used(target) and point_allowed(target)
+            )
+        )
 
         if not targets:
             raise StopIteration()
 
-        return random.choice(targets)
+        # Мне честно лень писать перебор всех путей
+        # Попробую положиться на случай
+        return (random.choice(targets), distance)
 
     def distance(self, point1: int, point2: int):
         return self._matrix[point1][point2]
@@ -274,14 +285,18 @@ class Input:
         manager = Manager()
         results: dict[int, dict[int, list[int]]] = manager.dict()
         
-        tasks: set[Process] = set()
         for truck_ids in permutations(range(self._k)):
-            process = Process(target=calculate_iteration, args=(truck_ids, results))
-            process.start()
-            tasks.add(process)
+            tasks: set[Process] = set()
 
-        for task in tasks:
-            task.join()
+            # На 5800x можно и побрутфорсить :-)
+            for _ in range(3):
+                for _ in range(15):
+                    process = Process(target=calculate_iteration, args=(truck_ids, results))
+                    process.start()
+                    tasks.add(process)
+
+                for task in tasks:
+                    task.join()
 
         results = dict(sorted(results.items(), reverse=True))
         self._transfered = next(iter(results))
