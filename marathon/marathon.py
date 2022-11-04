@@ -2,9 +2,9 @@ import logging
 import random
 import os
 from enum import Enum
-from itertools import islice, permutations
-from multiprocessing import Process, Manager
-from typing import Any, Optional
+from itertools import permutations, product
+from multiprocessing import Pool, Manager, cpu_count
+from typing import Any, Optional, Sequence
 
 from .logs import NameAbbrFilter, get_logger
 
@@ -114,7 +114,7 @@ class Matrix:
 
         # Мне честно лень писать перебор всех путей
         # Попробую положиться на случай
-        return (random.choice(targets), distance)
+        return (targets, distance)
 
     def distance(self, point1: int, point2: int):
         return self._matrix[point1][point2]
@@ -131,15 +131,18 @@ class Truck:
         FUEL = 0
         INDEX = 1
 
-    def __init__(self, k: int, fuel: int, matrix: Matrix) -> None:
+    def __init__(self, k: int, fuel: int, matrix: Matrix, hint: Sequence[int] = tuple()) -> None:
         self._log = get_logger(self)
 
         self._k = k
         self._fuel = fuel
         self._distance = 0
         self._matrix = matrix
+        self._hint = hint
+        self._hint_used = False
 
         self._route: list[int] = []
+        self._alternatives: list[list[int]] = []
         self._done = False
 
         self._cargo = 0
@@ -166,14 +169,29 @@ class Truck:
                         else:
                             raise StopIteration()
 
-                point, distance = self._matrix.nearest_point(
-                    self.get_position(),
-                    self._fuel - self._distance,
-                    PointRestriction.get(
-                        self._cargo, self._capacity)
-                        if not self._unloading
-                        else PointRestriction.M
-                )
+                route_step = len(self._route)
+                hint_length = len(self._hint)
+                if not self._hint_used and hint_length >= route_step + 1:
+                    point = self._hint[route_step]
+                    if self._matrix.is_used(point):
+                        raise Exception("Hint point already used")
+
+                    distance = self._matrix.distance(self.get_position(), point)
+                else:
+                    self._hint_used = True
+                    points, distance = self._matrix.nearest_point(
+                        self.get_position(),
+                        self._fuel - self._distance,
+                        PointRestriction.get(
+                            self._cargo, self._capacity)
+                            if not self._unloading
+                            else PointRestriction.M
+                    )
+
+                    point = points[0]
+                    if len(points) > 1:
+                        self._alternatives.extend(a + [b] for a, b in product([self._route], points[1:]))
+
                 self._add_route_point(point, distance)
 
                 if self._unloading:
@@ -201,6 +219,9 @@ class Truck:
     def get_route(self):
         return self._route
 
+    def get_alternatives(self):
+        return self._alternatives
+
     def order_by(self, order: Order):
         self._order = order
 
@@ -225,8 +246,11 @@ class Truck:
             f"Truck {self._k} used {self._point_type(point)} point {point}. Cargo {self._cargo}, distance {self._distance}/{self._fuel}"
         )
 
-    def _unload_one(self):
-        while True:
+    def unload(self, to: int = -1):
+        if to >= len(self._route) - 1:
+            raise Exception("Wrong unload index")
+
+        while len(self._route) != to + 1:
             try:
                 position = self._route.pop()
             except IndexError:
@@ -241,12 +265,17 @@ class Truck:
 
             self._log.debug(f"Truck {self._k} freed {self._point_type(position)} point {position}. Cargo {self._cargo}, distance {self._distance}/{self._fuel}")
 
+    def _unload_one(self):
+        while True:
+            position = self.get_position()
+            self.unload(len(self._route) - 2)
+
             if self._matrix.is_n_point(position):
                 break
 
     def __lt__(self, other: Any):
         if not isinstance(other, Truck):
-            raise NotImplemented()
+            raise NotImplementedError()
 
         if self._order == self.Order.FUEL:
             return self._fuel < other.get_fuel()
@@ -258,6 +287,70 @@ class Truck:
 
     def __str__(self) -> str:
         return f"[{self._k}]: {self._fuel}"
+
+
+def calculate_iteration(
+    truck_ids: tuple[int],
+    n: int,
+    m: int,
+    matrix_raw: tuple[tuple[int]],
+    restrictions: tuple[int],
+    results: dict[int, dict[int, list[int]]]
+):
+    def alternative_used(element: int, all_alternatives: set[int]):
+        if not element in all_alternatives:
+            all_alternatives.add(element)
+            return False
+
+        return True
+
+    matrix = Matrix(n, m, matrix_raw)
+    trucks_routes: dict[int, list[int]] = {}
+    for index in truck_ids:
+        alternatives: list[Sequence[int]] = []
+        all_alternatives: set[int] = set()
+        best_result = 0
+        best_route: list[int] = []
+        initial = True
+
+        counter = 0
+        while initial or alternatives:
+            hint = alternatives.pop(random.randrange(len(alternatives))) if not initial else tuple()
+
+            truck = Truck(index, restrictions[index], matrix, hint)
+            truck.calculate()
+
+            if best_result < matrix.get_used_n_points():
+                best_result = matrix.get_used_n_points()
+                best_route = truck.get_route().copy()
+
+            truck.unload()
+
+            new_alternatives = tuple(
+                a for a in truck.get_alternatives()
+                if not alternative_used(hash(tuple(a)), all_alternatives)
+            )
+            alternatives.extend(new_alternatives)
+
+            initial = False
+            counter += 1
+
+            if counter > 2000:
+                break
+
+            #if counter % 1000 == 0:
+            #    gc.collect()
+
+        trucks_routes[index] = best_route
+
+        truck = Truck(index, restrictions[index], matrix, trucks_routes[index])
+        truck.calculate()
+
+    results[matrix.get_used_n_points()] = trucks_routes
+
+
+def on_error(arg):
+    print(arg)
 
 
 class Input:
@@ -272,31 +365,19 @@ class Input:
         self._transfered = 0
 
     def calculate(self) -> str:
-        def calculate_iteration(truck_ids: tuple[int], results: dict[int, dict[int, list[int]]]):
-            matrix = Matrix(self._n, self._m, self._matrix)
-            truck_routes: dict[int, list[int]] = {}
-            for index in truck_ids:
-                truck = Truck(index, self._restrictions[index], matrix)
-                truck.calculate()
-                truck_routes[index] = truck.get_route()
-
-            results[matrix.get_used_n_points()] = truck_routes
-
         manager = Manager()
         results: dict[int, dict[int, list[int]]] = manager.dict()
-        
-        for truck_ids in permutations(range(self._k)):
-            tasks: set[Process] = set()
 
-            # На 5800x можно и побрутфорсить :-)
-            for _ in range(3):
-                for _ in range(15):
-                    process = Process(target=calculate_iteration, args=(truck_ids, results))
-                    process.start()
-                    tasks.add(process)
+        if True:
+            with Pool(cpu_count() - 2) as pool:
+                for truck_ids in permutations(range(self._k)):
+                    pool.apply_async(calculate_iteration, args=(truck_ids, self._n, self._m, self._matrix, self._restrictions, results), error_callback=on_error)
 
-                for task in tasks:
-                    task.join()
+                pool.close()
+                pool.join()
+        else:
+            for truck_ids in permutations(range(self._k)):
+                calculate_iteration(truck_ids, self._n, self._m, self._matrix, self._restrictions, results)
 
         results = dict(sorted(results.items(), reverse=True))
         self._transfered = next(iter(results))
