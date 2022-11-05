@@ -21,6 +21,8 @@ class PointRestriction(Enum):
 
 
 class Matrix:
+    CLOSEST_DISTANCE_RANGE = 3
+
     def __init__(self, n: int, m: int, matrix: tuple[tuple[int]]) -> None:
         self._n = n
         self._m = m
@@ -46,7 +48,7 @@ class Matrix:
             _closest = next(iter(distances.keys()))
             self._closest_distances[point] = tuple(
                 d for d in distances.keys()
-                if d <= 2.5 * _closest
+                if d <= self.CLOSEST_DISTANCE_RANGE * _closest
             )
 
         self._used: set[int] = set()
@@ -85,7 +87,31 @@ class Matrix:
         return self._used_n < self._n
 
     def get_initial_closest_distances(self):
-        return self._closest_distances[0]
+        distances: list[int] = []
+
+        _closest = None
+        next(
+            distance
+            for distance, targets in self._distances[0].items()
+            if any(t for t in targets if not self.is_used(t))
+        )
+
+        for distance, targets in self._distances[0].items():
+            if _closest is None:
+                if any(t for t in targets if not self.is_used(t)):
+                    _closest = distance
+
+                    if _closest == self._closest_distances[0][0]:
+                        return self._closest_distances[0]
+                else:
+                    continue
+
+            if distance > _closest * self.CLOSEST_DISTANCE_RANGE:
+                break
+
+            distances.append(distance)
+
+        return distances
 
     def nearest_point(
         self,

@@ -91,7 +91,7 @@ class TruckProcessor:
                     best_result = result
                     best_route = route
 
-                if (datetime.now() - _start).total_seconds() > 10:
+                if (datetime.now() - _start).total_seconds() > 7:
                     break
 
                 counter += 1
