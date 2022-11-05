@@ -61,7 +61,7 @@ class Input:
 
 def main():
     logging.basicConfig(
-        format="%(asctime)s: %(levelname)s %(name_abbr)s %(message)s",
+        format="%(asctime)s: [%(process)d] %(levelname)s %(name_abbr)s %(message)s",
         level=logging.INFO,
         filename="marathon.log",
         filemode="w"

@@ -7,8 +7,10 @@ from .objects import Matrix, Truck
 
 
 class TruckProcessor:
+    MAXIMUM_ALTERNATIVE_PROCESS_TIME = 2
+
     def __init__(self) -> None:
-        self._logs = get_logger(__name__)
+        self._log = get_logger(__name__)
         self.mp_results: dict[int, dict[int, list[int]]] = {}
 
     def iteration(
@@ -52,6 +54,7 @@ class TruckProcessor:
 
             return result, route
 
+        self._log.debug("Processing combination %s", truck_ids)
         matrix = Matrix(n, m, matrix_raw)
         trucks_routes: dict[int, list[int]] = {}
         for index in truck_ids:
@@ -90,9 +93,10 @@ class TruckProcessor:
                 if result and route:
                     best_result = result
                     best_route = route
-
-                if (datetime.now() - _start).total_seconds() > 7:
-                    break
+                    _start = datetime.now()
+                else:
+                    if (datetime.now() - _start).total_seconds() > self.MAXIMUM_ALTERNATIVE_PROCESS_TIME:
+                        break
 
                 counter += 1
 
@@ -108,7 +112,7 @@ class TruckProcessor:
         self.mp_results.update({task_results[0]: task_results[1]})
 
     def on_error(self, arg: Any):
-        self._logs.error(arg)
+        self._log.error(arg)
 
     def rearm(self):
         self.mp_results.clear()

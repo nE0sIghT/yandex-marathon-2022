@@ -21,7 +21,7 @@ class PointRestriction(Enum):
 
 
 class Matrix:
-    CLOSEST_DISTANCE_RANGE = 3
+    CLOSEST_DISTANCE_RANGE = 10
 
     def __init__(self, n: int, m: int, matrix: tuple[tuple[int]]) -> None:
         self._n = n
