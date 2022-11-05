@@ -1,8 +1,9 @@
 import logging
 import random
 import os
+from datetime import datetime
 from enum import Enum
-from itertools import permutations, product
+from itertools import permutations, product, islice
 from multiprocessing import Pool, Manager, cpu_count
 from typing import Any, Optional, Sequence
 
@@ -31,6 +32,7 @@ class Matrix:
         self._used_n = 0
         self._matrix = matrix
         self._distances: dict[int, dict[int, list[int]]] = {}
+        self._closest_distances: dict[int, tuple[int]] = {}
 
         # Кешируем кратчайшие пути
         for point, point_distances in enumerate(self._matrix):
@@ -44,6 +46,13 @@ class Matrix:
 
             for point_distances in self._distances[point].values():
                 point_distances.sort()
+
+        for point, distances in self._distances.items():
+            _closest = next(iter(distances.keys()))
+            self._closest_distances[point] = tuple(
+                d for d in distances.keys()
+                if d <= 2 * _closest
+            )
 
         self._used: set[int] = set()
 
@@ -80,7 +89,16 @@ class Matrix:
     def have_free_n_points(self):
         return self._used_n < self._n
 
-    def nearest_point(self, point: int, maximum_distance: int, point_restriction: Optional[PointRestriction]):
+    def get_initial_closest_distances(self):
+        return self._closest_distances[0]
+
+    def nearest_point(
+        self,
+        point: int,
+        maximum_distance: int,
+        point_restriction: Optional[PointRestriction],
+        not_so_nearest: bool
+    ):
         def point_allowed(target: int):
             if point_restriction is None:
                 return True
@@ -100,7 +118,14 @@ class Matrix:
                     if not self.is_used(target) and point_allowed(target)
                 )
             )
-            for distance, targets in self._distances[point].items()
+            for distance, targets
+            in islice(
+                self._distances[point].items(),
+                random.randrange(len(self._closest_distances[point]))
+                    if not_so_nearest
+                    else 0,
+                None
+            )
             if distance <= maximum_distance and
             any(
                 target
@@ -112,9 +137,7 @@ class Matrix:
         if not targets:
             raise StopIteration()
 
-        # Мне честно лень писать перебор всех путей
-        # Попробую положиться на случай
-        return (targets, distance)
+        return (targets, distance, distance in self._closest_distances[point])
 
     def distance(self, point1: int, point2: int):
         return self._matrix[point1][point2]
@@ -179,17 +202,18 @@ class Truck:
                     distance = self._matrix.distance(self.get_position(), point)
                 else:
                     self._hint_used = True
-                    points, distance = self._matrix.nearest_point(
+                    points, distance, closest = self._matrix.nearest_point(
                         self.get_position(),
                         self._fuel - self._distance,
                         PointRestriction.get(
                             self._cargo, self._capacity)
                             if not self._unloading
-                            else PointRestriction.M
+                            else PointRestriction.M,
+                        len(self._route) == 0
                     )
 
                     point = points[0]
-                    if len(points) > 1:
+                    if len(points) > 2 and closest:
                         self._alternatives.extend(a + [b] for a, b in product([self._route], points[1:]))
 
                 self._add_route_point(point, distance)
@@ -220,7 +244,14 @@ class Truck:
         return self._route
 
     def get_alternatives(self):
-        return self._alternatives
+        return tuple(
+            alternative
+            for alternative in self._alternatives
+            if sum(
+                self._matrix.distance(alternative[index], alternative[index+1])
+                for index in range(len(alternative) - 1)
+            ) / self._fuel < 0.15
+        )
 
     def order_by(self, order: Order):
         self._order = order
@@ -297,12 +328,33 @@ def calculate_iteration(
     restrictions: tuple[int],
     results: dict[int, dict[int, list[int]]]
 ):
-    def alternative_used(element: int, all_alternatives: set[int]):
-        if not element in all_alternatives:
-            all_alternatives.add(element)
-            return False
+    def process_truck(hint: Sequence[int], alternatives: list[Sequence[int]], all_alternatives: set[int], best_result):
+        def alternative_used(element: int):
+            if not element in all_alternatives:
+                all_alternatives.add(element)
+                return False
 
-        return True
+            return True
+
+        result = None
+        route = None
+
+        truck = Truck(index, restrictions[index], matrix, hint)
+        truck.calculate()
+
+        if best_result < matrix.get_used_n_points():
+            result = matrix.get_used_n_points()
+            route = truck.get_route().copy()
+
+        new_alternatives = tuple(
+            a for a in truck.get_alternatives()
+            if not alternative_used(hash(tuple(a)))
+        )
+        alternatives.extend(new_alternatives)
+
+        truck.unload()
+
+        return result, route
 
     matrix = Matrix(n, m, matrix_raw)
     trucks_routes: dict[int, list[int]] = {}
@@ -311,35 +363,33 @@ def calculate_iteration(
         all_alternatives: set[int] = set()
         best_result = 0
         best_route: list[int] = []
-        initial = True
 
+        for _ in range(len(matrix.get_initial_closest_distances())):
+            result, route = process_truck(tuple(), alternatives, all_alternatives, best_result)
+            if result and route:
+                best_result = result
+                best_route = route
+
+        _start = datetime.now()
         counter = 0
-        while initial or alternatives:
-            hint = alternatives.pop(random.randrange(len(alternatives))) if not initial else tuple()
+        while alternatives:
+            if counter % 3 == 0:
+                i = 0
+            elif counter % 2 == 0:
+                i = -1
+            else:
+                i = random.randrange(len(alternatives))
 
-            truck = Truck(index, restrictions[index], matrix, hint)
-            truck.calculate()
+            hint = alternatives.pop(i)
+            result, route = process_truck(hint, alternatives, all_alternatives, best_result)
+            if result and route:
+                best_result = result
+                best_route = route
 
-            if best_result < matrix.get_used_n_points():
-                best_result = matrix.get_used_n_points()
-                best_route = truck.get_route().copy()
-
-            truck.unload()
-
-            new_alternatives = tuple(
-                a for a in truck.get_alternatives()
-                if not alternative_used(hash(tuple(a)), all_alternatives)
-            )
-            alternatives.extend(new_alternatives)
-
-            initial = False
-            counter += 1
-
-            if counter > 2000:
+            if (datetime.now() - _start).total_seconds() > 2:
                 break
 
-            #if counter % 1000 == 0:
-            #    gc.collect()
+            counter += 1
 
         trucks_routes[index] = best_route
 
@@ -368,7 +418,7 @@ class Input:
         manager = Manager()
         results: dict[int, dict[int, list[int]]] = manager.dict()
 
-        if True:
+        if os.getenv('MARATHON_MULTIPROCESS', "") == "1":
             with Pool(cpu_count() - 2) as pool:
                 for truck_ids in permutations(range(self._k)):
                     pool.apply_async(calculate_iteration, args=(truck_ids, self._n, self._m, self._matrix, self._restrictions, results), error_callback=on_error)
