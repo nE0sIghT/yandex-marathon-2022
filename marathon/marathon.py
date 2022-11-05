@@ -51,7 +51,7 @@ class Matrix:
             _closest = next(iter(distances.keys()))
             self._closest_distances[point] = tuple(
                 d for d in distances.keys()
-                if d <= 2 * _closest
+                if d <= 2.5 * _closest
             )
 
         self._used: set[int] = set()
@@ -97,7 +97,7 @@ class Matrix:
         point: int,
         maximum_distance: int,
         point_restriction: Optional[PointRestriction],
-        not_so_nearest: bool
+        force_distance: Optional[int]
     ):
         def point_allowed(target: int):
             if point_restriction is None:
@@ -107,6 +107,17 @@ class Matrix:
                 point_restriction == PointRestriction.N and self.is_n_point(target)
             ) or (
                 point_restriction == PointRestriction.M and self.is_m_point(target)
+            )
+
+        if force_distance is not None:
+            distance_generator = (
+                (distance, targets)
+                for distance, targets in self._distances[point].items()
+                if distance == force_distance
+            )
+        else:
+            distance_generator = (
+                d for d in self._distances[point].items()
             )
 
         distance, targets = next(
@@ -119,13 +130,7 @@ class Matrix:
                 )
             )
             for distance, targets
-            in islice(
-                self._distances[point].items(),
-                random.randrange(len(self._closest_distances[point]))
-                    if not_so_nearest
-                    else 0,
-                None
-            )
+            in distance_generator
             if distance <= maximum_distance and
             any(
                 target
@@ -154,7 +159,14 @@ class Truck:
         FUEL = 0
         INDEX = 1
 
-    def __init__(self, k: int, fuel: int, matrix: Matrix, hint: Sequence[int] = tuple()) -> None:
+    def __init__(
+        self,
+        k: int,
+        fuel: int,
+        matrix: Matrix,
+        hint: Sequence[int] = tuple(),
+        initial_distance: Optional[int] = None
+    ) -> None:
         self._log = get_logger(self)
 
         self._k = k
@@ -163,6 +175,7 @@ class Truck:
         self._matrix = matrix
         self._hint = hint
         self._hint_used = False
+        self._initial_distance = initial_distance
 
         self._route: list[int] = []
         self._alternatives: list[list[int]] = []
@@ -209,7 +222,7 @@ class Truck:
                             self._cargo, self._capacity)
                             if not self._unloading
                             else PointRestriction.M,
-                        len(self._route) == 0
+                        self._initial_distance if len(self._route) == 0 else None
                     )
 
                     point = points[0]
@@ -278,6 +291,9 @@ class Truck:
         )
 
     def unload(self, to: int = -1):
+        if not self._route and to < 0:
+            return
+
         if to >= len(self._route) - 1:
             raise Exception("Wrong unload index")
 
@@ -328,7 +344,12 @@ def calculate_iteration(
     restrictions: tuple[int],
     results: dict[int, dict[int, list[int]]]
 ):
-    def process_truck(hint: Sequence[int], alternatives: list[Sequence[int]], all_alternatives: set[int], best_result):
+    def process_truck(
+        hint: Sequence[int],
+        alternatives: list[Sequence[int]],
+        all_alternatives: set[int],
+        best_result: int,
+        initial_distance: Optional[int] = None):
         def alternative_used(element: int):
             if not element in all_alternatives:
                 all_alternatives.add(element)
@@ -339,7 +360,7 @@ def calculate_iteration(
         result = None
         route = None
 
-        truck = Truck(index, restrictions[index], matrix, hint)
+        truck = Truck(index, restrictions[index], matrix, hint, initial_distance)
         truck.calculate()
 
         if best_result < matrix.get_used_n_points():
@@ -364,8 +385,8 @@ def calculate_iteration(
         best_result = 0
         best_route: list[int] = []
 
-        for _ in range(len(matrix.get_initial_closest_distances())):
-            result, route = process_truck(tuple(), alternatives, all_alternatives, best_result)
+        for initial_distance in matrix.get_initial_closest_distances():
+            result, route = process_truck(tuple(), alternatives, all_alternatives, best_result, initial_distance)
             if result and route:
                 best_result = result
                 best_route = route
@@ -386,7 +407,7 @@ def calculate_iteration(
                 best_result = result
                 best_route = route
 
-            if (datetime.now() - _start).total_seconds() > 2:
+            if (datetime.now() - _start).total_seconds() > 10:
                 break
 
             counter += 1
